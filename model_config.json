@@ -1,0 +1,12 @@
+{
+  "src_vocab_size": 9170,
+  "tgt_vocab_size": 9170,
+  "d_model": 256,
+  "num_heads": 2,
+  "num_encoder_layers": 2,
+  "num_decoder_layers": 2,
+  "d_ff": 1024,
+  "max_seq_len": 50,
+  "dropout": 0.2,
+  "batch_size": 64
+}
