@@ -5,12 +5,13 @@ Author: Asheer Adnan
 
 import streamlit as st
 import torch
+import gdown
+import zipfile
 import os
 import json
 import pickle
 from pathlib import Path
 import sys
-import requests
 
 # ============================================
 # PAGE CONFIG
@@ -22,63 +23,68 @@ st.set_page_config(
 )
 
 # ============================================
-# PREPROCESSOR CLASS (needed for pickle)
+# DOWNLOAD MODEL FUNCTION (GitHub Release)
 # ============================================
-class UrduPreprocessor:
-    """Class used in preprocessor.pkl"""
-    def __init__(self, vocab=None):
-        self.vocab = vocab or {}
-
-    def encode(self, text):
-        # Dummy encoding — replace with real logic
-        return torch.tensor([[1, 2, 3]])
-
-    def decode(self, indices):
-        # Dummy decoding — replace with real logic
-        return "یہ ایک فرضی جواب ہے۔"
-
-# ============================================
-# DOWNLOAD MODEL WEIGHTS FROM GITHUB
-# ============================================
-def download_model_weights():
+def download_model_from_github():
+    """Download .pth file from GitHub Releases if not present."""
     model_dir = "models"
     os.makedirs(model_dir, exist_ok=True)
-    model_path = os.path.join(model_dir, "best_model.pth")
 
-    if not os.path.exists(model_path):
-        url = "https://github.com/<username>/<repo>/releases/download/<tag>/best_model.pth?raw=true"
-        with st.spinner("📥 Downloading model weights from GitHub..."):
-            r = requests.get(url, stream=True)
-            with open(model_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-        st.success("✅ Model weights downloaded!")
+    model_file = model_dir + "/best_model.pth"
+    github_url = "https://github.com/<your-username>/<repo>/releases/download/<tag>/best_model.pth"
+
+    if not os.path.exists(model_file):
+        with st.spinner("📦 Downloading model from GitHub Releases..."):
+            gdown.download(github_url, model_file, quiet=False)
+        st.success("✅ Model downloaded from GitHub Releases.")
     else:
-        st.info("✅ Model weights already exist, skipping download.")
+        st.info("✅ Model already exists, skipping download.")
 
-download_model_weights()
+download_model_from_github()
 
 # ============================================
-# LOAD MODEL (CACHED)
+# LOAD MODEL FUNCTION (PyTorch 2.6+ Safe)
 # ============================================
 @st.cache_resource
 def load_model():
+    """Load model, preprocessor, and config safely (PyTorch 2.6+)."""
     try:
-        model_path = Path("models/best_model.pth")
-        config_path = Path("model_config.json")      # directly from repo
-        preproc_path = Path("preprocessor.pkl")      # directly from repo
+        model_dir = Path("models")
+        model_path = model_dir / "best_model.pth"
+        config_path = model_dir / "model_config.json"
+        preproc_path = model_dir / "preprocessor.pkl"
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        # ----------------------
         # Load config
-        with open(config_path, "r") as f:
-            config = json.load(f)
+        # ----------------------
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                config = json.load(f)
+        else:
+            st.warning("⚠️ model_config.json not found. Using default config.")
+            config = {
+                "src_vocab_size": 5000,
+                "tgt_vocab_size": 5000,
+                "d_model": 512,
+                "num_heads": 8,
+                "num_encoder_layers": 4,
+                "num_decoder_layers": 4,
+                "d_ff": 2048,
+                "max_seq_len": 128,
+                "dropout": 0.1
+            }
 
-        # Import Transformer model
+        # ----------------------
+        # Import Transformer
+        # ----------------------
         sys.path.append(str(Path(__file__).parent))
-        from model import Transformer
+        from model import Transformer  # your Transformer class
 
+        # ----------------------
         # Initialize model
+        # ----------------------
         model = Transformer(
             src_vocab_size=config["src_vocab_size"],
             tgt_vocab_size=config["tgt_vocab_size"],
@@ -91,22 +97,43 @@ def load_model():
             dropout=config["dropout"]
         ).to(device)
 
-        # Load weights
-        checkpoint = torch.load(model_path, map_location=device)
-        model.load_state_dict(checkpoint["model_state_dict"])
+        # ----------------------
+        # Load weights (trusted source!)
+        # ----------------------
+        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+        if "model_state_dict" in checkpoint:
+            model.load_state_dict(checkpoint["model_state_dict"])
+        else:
+            # fallback if the whole model was saved
+            model = checkpoint
+
         model.eval()
 
+        # ----------------------
         # Load preprocessor
-        with open(preproc_path, "rb") as f:
-            preprocessor = pickle.load(f)
+        # ----------------------
+        if preproc_path.exists():
+            with open(preproc_path, "rb") as f:
+                preprocessor = pickle.load(f)
+        else:
+            st.warning("⚠️ preprocessor.pkl not found. Using placeholder.")
+            class UrduPreprocessor:
+                def encode(self, text): return torch.tensor([[1,2,3]])
+                def decode(self, idx): return "یہ ایک فرضی جواب ہے۔"
+            preprocessor = UrduPreprocessor()
 
         return model, preprocessor, device
 
     except Exception as e:
         st.error(f"⚠️ Error loading model: {e}")
+        class UrduPreprocessor:
+            def encode(self, text): return torch.tensor([[1,2,3]])
+            def decode(self, idx): return "یہ ایک فرضی جواب ہے۔"
         return None, UrduPreprocessor(), None
 
-# Initialize model
+# ============================================
+# INITIALIZE MODEL
+# ============================================
 with st.spinner("🔄 Loading Urdu Chatbot model..."):
     model, preprocessor, device = load_model()
 
@@ -115,14 +142,12 @@ with st.spinner("🔄 Loading Urdu Chatbot model..."):
 # ============================================
 def generate_response(text):
     """Generate chatbot response."""
-    if not model:
+    if not model or not preprocessor:
         return "⚠️ Model not loaded. Please refresh the page."
-
     try:
         input_tensor = preprocessor.encode(text).unsqueeze(0).to(device)
         with torch.no_grad():
-            # Replace with your actual model.generate() logic
-            output_indices = model.generate(input_tensor)
+            output_indices = model.generate(input_tensor)  # Replace with your generate method
         response = preprocessor.decode(output_indices[0])
     except Exception:
         response = "معاف کریں، میں ابھی جواب دینے سے قاصر ہوں۔"
