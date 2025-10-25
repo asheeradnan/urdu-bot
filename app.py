@@ -23,31 +23,44 @@ st.set_page_config(
 )
 
 # ============================================
-# DOWNLOAD MODEL FUNCTION (GitHub Release)
+# PREPROCESSOR CLASS (needed to load pickle)
+# ============================================
+class UrduPreprocessor:
+    """Fallback class if preprocessor.pkl is missing"""
+    def encode(self, text):
+        return torch.tensor([[1, 2, 3]])  # placeholder
+    def decode(self, indices):
+        return "یہ ایک فرضی جواب ہے۔"
+
+# ============================================
+# MODEL DOWNLOAD FUNCTION (GitHub Release)
 # ============================================
 def download_model_from_github():
-    """Download .pth file from GitHub Releases if not present."""
+    """Download and extract model files from GitHub release."""
     model_dir = "models"
-    os.makedirs(model_dir, exist_ok=True)
+    zip_path = "model_files.zip"
 
-    model_file = model_dir + "/best_model.pth"
-    github_url = "https://github.com/<your-username>/<repo>/releases/download/<tag>/best_model.pth"
+    # GitHub release URL (replace with your release URL)
+    github_url = "https://github.com/yourusername/yourrepo/releases/download/v1.0/best_model.zip"
 
-    if not os.path.exists(model_file):
-        with st.spinner("📦 Downloading model from GitHub Releases..."):
-            gdown.download(github_url, model_file, quiet=False)
-        st.success("✅ Model downloaded from GitHub Releases.")
+    if not os.path.exists(model_dir) or not os.listdir(model_dir):
+        with st.spinner("📦 Downloading model from GitHub..."):
+            gdown.download(github_url, zip_path, quiet=False)
+            with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                zip_ref.extractall(model_dir)
+            os.remove(zip_path)
+            st.success("✅ Model downloaded and extracted successfully!")
     else:
-        st.info("✅ Model already exists, skipping download.")
+        st.info("✅ Model folder already exists — skipping download.")
 
 download_model_from_github()
+st.write("Files in models folder:", os.listdir("models"))
 
 # ============================================
-# LOAD MODEL FUNCTION (PyTorch 2.6+ Safe)
+# LOAD MODEL FUNCTION
 # ============================================
 @st.cache_resource
 def load_model():
-    """Load model, preprocessor, and config safely (PyTorch 2.6+)."""
     try:
         model_dir = Path("models")
         model_path = model_dir / "best_model.pth"
@@ -56,9 +69,7 @@ def load_model():
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # ----------------------
-        # Load config
-        # ----------------------
+        # Load config or fallback
         if config_path.exists():
             with open(config_path, "r") as f:
                 config = json.load(f)
@@ -76,15 +87,11 @@ def load_model():
                 "dropout": 0.1
             }
 
-        # ----------------------
         # Import Transformer
-        # ----------------------
         sys.path.append(str(Path(__file__).parent))
-        from model import Transformer  # your Transformer class
+        from model import Transformer
 
-        # ----------------------
-        # Initialize model
-        # ----------------------
+        # Initialize empty model
         model = Transformer(
             src_vocab_size=config["src_vocab_size"],
             tgt_vocab_size=config["tgt_vocab_size"],
@@ -97,38 +104,28 @@ def load_model():
             dropout=config["dropout"]
         ).to(device)
 
-        # ----------------------
-        # Load weights (trusted source!)
-        # ----------------------
+        # Load weights (supports full model or state_dict)
         checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-        if "model_state_dict" in checkpoint:
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
             model.load_state_dict(checkpoint["model_state_dict"])
+        elif isinstance(checkpoint, dict):
+            model.load_state_dict(checkpoint)
         else:
-            # fallback if the whole model was saved
-            model = checkpoint
-
+            model = checkpoint.to(device)
         model.eval()
 
-        # ----------------------
         # Load preprocessor
-        # ----------------------
         if preproc_path.exists():
             with open(preproc_path, "rb") as f:
                 preprocessor = pickle.load(f)
         else:
             st.warning("⚠️ preprocessor.pkl not found. Using placeholder.")
-            class UrduPreprocessor:
-                def encode(self, text): return torch.tensor([[1,2,3]])
-                def decode(self, idx): return "یہ ایک فرضی جواب ہے۔"
             preprocessor = UrduPreprocessor()
 
         return model, preprocessor, device
 
     except Exception as e:
         st.error(f"⚠️ Error loading model: {e}")
-        class UrduPreprocessor:
-            def encode(self, text): return torch.tensor([[1,2,3]])
-            def decode(self, idx): return "یہ ایک فرضی جواب ہے۔"
         return None, UrduPreprocessor(), None
 
 # ============================================
@@ -141,15 +138,26 @@ with st.spinner("🔄 Loading Urdu Chatbot model..."):
 # RESPONSE GENERATION
 # ============================================
 def generate_response(text):
-    """Generate chatbot response."""
+    """Generate chatbot response using Transformer and preprocessor."""
     if not model or not preprocessor:
         return "⚠️ Model not loaded. Please refresh the page."
+
     try:
-        input_tensor = preprocessor.encode(text).unsqueeze(0).to(device)
-        with torch.no_grad():
-            output_indices = model.generate(input_tensor)  # Replace with your generate method
+        input_tensor = preprocessor.encode(text).to(device)
+        input_tensor = input_tensor.unsqueeze(0)  # add batch dim
+
+        # Use generate() if your Transformer has it
+        if hasattr(model, "generate"):
+            output_indices = model.generate(input_tensor)
+        else:
+            # fallback: forward pass + argmax
+            with torch.no_grad():
+                output_logits = model(input_tensor, input_tensor)
+                output_indices = output_logits.argmax(dim=-1)
+
         response = preprocessor.decode(output_indices[0])
-    except Exception:
+    except Exception as e:
+        print("Error generating response:", e)
         response = "معاف کریں، میں ابھی جواب دینے سے قاصر ہوں۔"
     return response
 
@@ -164,15 +172,14 @@ if "chat_history" not in st.session_state:
 
 user_input = st.text_input("اپنا پیغام یہاں لکھیں (Type your message in Urdu):")
 
-if st.button("Send"):
-    if user_input.strip():
-        bot_reply = generate_response(user_input)
-        st.session_state.chat_history.append(("user", user_input))
-        st.session_state.chat_history.append(("bot", bot_reply))
-    else:
-        st.warning("⚠️ براہ کرم کوئی پیغام درج کریں (Please type a message).")
+if st.button("Send") and user_input.strip():
+    bot_reply = generate_response(user_input)
+    st.session_state.chat_history.append(("user", user_input))
+    st.session_state.chat_history.append(("bot", bot_reply))
+elif st.button("Send"):
+    st.warning("⚠️ براہ کرم کوئی پیغام درج کریں (Please type a message).")
 
-# Display chat history
+# Display chat
 for role, msg in st.session_state.chat_history:
     if role == "user":
         st.markdown(f"🧑‍💬 **You:** {msg}")
