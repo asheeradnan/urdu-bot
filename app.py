@@ -5,13 +5,12 @@ Author: Asheer Adnan
 
 import streamlit as st
 import torch
-import gdown
-import zipfile
 import os
 import json
 import pickle
 from pathlib import Path
 import sys
+import requests
 
 # ============================================
 # PAGE CONFIG
@@ -23,43 +22,51 @@ st.set_page_config(
 )
 
 # ============================================
-# MODEL DOWNLOAD FUNCTION
+# PREPROCESSOR CLASS (needed for pickle)
 # ============================================
-def download_model_from_drive():
-    """Download and extract model files from Google Drive (if not already present)."""
+class UrduPreprocessor:
+    """Class used in preprocessor.pkl"""
+    def __init__(self, vocab=None):
+        self.vocab = vocab or {}
+
+    def encode(self, text):
+        # Dummy encoding — replace with real logic
+        return torch.tensor([[1, 2, 3]])
+
+    def decode(self, indices):
+        # Dummy decoding — replace with real logic
+        return "یہ ایک فرضی جواب ہے۔"
+
+# ============================================
+# DOWNLOAD MODEL WEIGHTS FROM GITHUB
+# ============================================
+def download_model_weights():
     model_dir = "models"
-    zip_path = "model_folder.zip"
+    os.makedirs(model_dir, exist_ok=True)
+    model_path = os.path.join(model_dir, "best_model.pth")
 
-    # ✅ Your Google Drive file ID (from shared link)
-    file_id = "1wPump7hM0JDtUk7Gvz0Q_AwLIIYf2Kgv"
-    url = f"https://drive.google.com/uc?id={file_id}"
-
-    if not os.path.exists(model_dir):
-        with st.spinner("📦 Downloading model files from Google Drive... (first time only)"):
-            gdown.download(url, zip_path, quiet=False)
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                zip_ref.extractall(model_dir)
-            os.remove(zip_path)
-            st.success("✅ Model files downloaded and extracted successfully!")
+    if not os.path.exists(model_path):
+        url = "https://github.com/<username>/<repo>/releases/download/<tag>/best_model.pth?raw=true"
+        with st.spinner("📥 Downloading model weights from GitHub..."):
+            r = requests.get(url, stream=True)
+            with open(model_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        st.success("✅ Model weights downloaded!")
     else:
-        print("✅ Model folder already exists — skipping download.")
+        st.info("✅ Model weights already exist, skipping download.")
 
-
-# Run the download function
-download_model_from_drive()
-
+download_model_weights()
 
 # ============================================
 # LOAD MODEL (CACHED)
 # ============================================
 @st.cache_resource
 def load_model():
-    """Load model, preprocessor, and config (cached for performance)."""
     try:
-        # File paths
         model_path = Path("models/best_model.pth")
-        config_path = Path("models/model_config.json")
-        preproc_path = Path("models/preprocessor.pkl")
+        config_path = Path("model_config.json")      # directly from repo
+        preproc_path = Path("preprocessor.pkl")      # directly from repo
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -67,7 +74,7 @@ def load_model():
         with open(config_path, "r") as f:
             config = json.load(f)
 
-        # Import your Transformer class
+        # Import Transformer model
         sys.path.append(str(Path(__file__).parent))
         from model import Transformer
 
@@ -97,13 +104,11 @@ def load_model():
 
     except Exception as e:
         st.error(f"⚠️ Error loading model: {e}")
-        return None, None, None
+        return None, UrduPreprocessor(), None
 
-
-# Load model
+# Initialize model
 with st.spinner("🔄 Loading Urdu Chatbot model..."):
     model, preprocessor, device = load_model()
-
 
 # ============================================
 # RESPONSE GENERATION
@@ -113,10 +118,15 @@ def generate_response(text):
     if not model:
         return "⚠️ Model not loaded. Please refresh the page."
 
-    # Dummy response placeholder
-    # 👉 Replace this with your inference function if available
-    return f"🤖 {text} کے بارے میں بات کرتے ہیں۔"
-
+    try:
+        input_tensor = preprocessor.encode(text).unsqueeze(0).to(device)
+        with torch.no_grad():
+            # Replace with your actual model.generate() logic
+            output_indices = model.generate(input_tensor)
+        response = preprocessor.decode(output_indices[0])
+    except Exception:
+        response = "معاف کریں، میں ابھی جواب دینے سے قاصر ہوں۔"
+    return response
 
 # ============================================
 # STREAMLIT UI
@@ -137,9 +147,7 @@ if st.button("Send"):
     else:
         st.warning("⚠️ براہ کرم کوئی پیغام درج کریں (Please type a message).")
 
-# ============================================
-# DISPLAY CHAT
-# ============================================
+# Display chat history
 for role, msg in st.session_state.chat_history:
     if role == "user":
         st.markdown(f"🧑‍💬 **You:** {msg}")
@@ -147,6 +155,4 @@ for role, msg in st.session_state.chat_history:
         st.markdown(f"🤖 **Bot:** {msg}")
 
 st.markdown("---")
-st.markdown(
-    "Built with ❤️ using Streamlit & PyTorch | Developed by **Asheer Adnan (2025)**"
-)
+st.markdown("Built with ❤️ using Streamlit & PyTorch | Developed by **Asheer Adnan (2025)**")
