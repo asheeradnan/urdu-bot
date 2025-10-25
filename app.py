@@ -184,3 +184,4 @@ for role, msg in st.session_state.chat_history:
 
 st.markdown("---")
 st.markdown("Built with ❤️ using Streamlit & PyTorch | Developed by **Asheer Adnan (2025)**")
+
